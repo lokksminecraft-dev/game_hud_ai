@@ -157,4 +157,44 @@ class MainActivity : Activity() {
             setOnClickListener { start() }
         }
         root.addView(go, LinearLayout.LayoutParams(-1, dp(54)).apply { topMargin = dp(20) })
-        root.addView(label("As configurações valem ao iniciar o HUD. Para encerrar, segure o botão 🤖 por 1 segundo.", 12f, MUTED)
+                root.addView(label("As configurações valem ao iniciar o HUD. Para encerrar, segure o botão 🤖 por 1 segundo.", 12f, MUTED)
+            .apply { gravity = Gravity.CENTER }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
+
+        setContentView(ScrollView(this).apply { setBackgroundColor(BG); addView(root) })
+        if (Build.VERSION.SDK_INT >= 33) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+    }
+
+    private fun save() {
+        prefs.edit().apply {
+            putString("key", keyIn.text.toString().trim())
+            putString("model", modelIn.text.toString().trim().ifEmpty { Cfg.DEFAULT_MODEL })
+            putString("extra", extraIn.text.toString().trim())
+            putInt("mode", modeSp.selectedItemPosition)
+            putInt("len", lenSp.selectedItemPosition)
+            putInt("pos", posSp.selectedItemPosition)
+            putInt("tap", tapSp.selectedItemPosition)
+            putBoolean("auto", autoSw.isChecked)
+            sliders.forEach { (k, p) -> putInt(k, p.first.progress + p.second) }
+        }.apply()
+    }
+
+    private fun start() {
+        save()
+        if (!Settings.canDrawOverlays(this)) {
+            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+            Toast.makeText(this, "Permita 'exibir sobre outros apps' e volte", Toast.LENGTH_LONG).show()
+            return
+        }
+        val mpm = getSystemService(MediaProjectionManager::class.java)
+        startActivityForResult(mpm.createScreenCaptureIntent(), 100)
+    }
+
+    @Deprecated("simple flow")
+    override fun onActivityResult(req: Int, res: Int, data: Intent?) {
+        super.onActivityResult(req, res, data)
+        if (req == 100 && res == RESULT_OK && data != null) {
+            startForegroundService(Intent(this, HudService::class.java).putExtra("code", res).putExtra("data", data))
+            moveTaskToBack(true)
+        }
+    }
+}
