@@ -8,7 +8,7 @@
     <application
         android:label="Game HUD AI"
         android:icon="@android:drawable/ic_dialog_info"
-        android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        android:theme="@android:style/Theme.Material.NoActionBar">
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
