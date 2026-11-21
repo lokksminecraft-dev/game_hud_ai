@@ -3,6 +3,7 @@ package com.example.gamehud
 import android.app.*
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.content.pm.ServiceInfo
 import android.graphics.*
 import android.graphics.drawable.GradientDrawable
@@ -15,7 +16,10 @@ import android.media.projection.MediaProjectionManager
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
+import android.util.TypedValue
 import android.view.*
+import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import org.json.JSONArray
 import org.json.JSONObject
@@ -23,26 +27,33 @@ import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 
-class HudService : Service() {
-    companion object {
-        const val MODEL = "gemini-2.5-flash" // troque se o modelo mudar
-        const val PROMPT = "Você é uma assistente de jogos. Analise este print da tela do jogador " +
-            "e dê dicas curtas e úteis em português (máx. 3 frases). Ignore o HUD de overlay."
+class MaxHeightScroll(c: Context, private val maxH: Int) : ScrollView(c) {
+    override fun onMeasure(w: Int, h: Int) {
+        super.onMeasure(w, View.MeasureSpec.makeMeasureSpec(maxH, View.MeasureSpec.AT_MOST))
     }
+}
 
+class HudService : Service() {
     private lateinit var wm: WindowManager
+    private lateinit var prefs: SharedPreferences
     private val ui = Handler(Looper.getMainLooper())
     private val lock = Any()
     private var projection: MediaProjection? = null
     private var reader: ImageReader? = null
     private var display: VirtualDisplay? = null
     private var held: Image? = null
+    private var busy = false
     private lateinit var btn: TextView
-    private lateinit var panel: TextView
+    private lateinit var panel: LinearLayout
+    private lateinit var body: TextView
+    private val hideTask = Runnable { panel.visibility = View.GONE }
+
+    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
     override fun onBind(i: Intent?) = null
 
     override fun onStartCommand(intent: Intent?, f: Int, id: Int): Int {
+        prefs = getSharedPreferences("cfg", Context.MODE_PRIVATE)
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel("hud", "HUD", NotificationManager.IMPORTANCE_LOW))
         val n = Notification.Builder(this, "hud").setContentTitle("Assistente de jogo ativa")
@@ -73,29 +84,57 @@ class HudService : Service() {
             DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, reader!!.surface, null, null)
     }
 
-    private fun lp(w: Int, gravity: Int, y: Int) = WindowManager.LayoutParams(
-        w, WindowManager.LayoutParams.WRAP_CONTENT,
-        WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+    private fun lp(w: Int, h: Int, gravity: Int, y: Int) = WindowManager.LayoutParams(
+        w, h, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
         WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT
     ).apply { this.gravity = gravity; this.y = y }
 
     private fun setupHud() {
         wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val sw = resources.displayMetrics.widthPixels
+        val sh = resources.displayMetrics.heightPixels
+        val alpha = prefs.getInt("opacity", 85) * 255 / 100
+        val bgColor = (alpha shl 24) or 0x12141C
 
-        panel = TextView(this).apply {
-            setTextColor(Color.WHITE); textSize = 15f; setPadding(32, 24, 32, 24)
-            background = GradientDrawable().apply { setColor(0xCC000000.toInt()); cornerRadius = 32f }
+        panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(10), dp(14), dp(12))
+            background = GradientDrawable().apply {
+                setColor(bgColor); cornerRadius = dp(18).toFloat(); setStroke(dp(1), 0x666C5CE7)
+            }
             visibility = View.GONE
-            setOnClickListener { visibility = View.GONE }
         }
-        wm.addView(panel, lp((sw * 0.9).toInt(), Gravity.TOP or Gravity.CENTER_HORIZONTAL, 120))
+        val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        header.addView(TextView(this).apply {
+            text = "🤖 Assistente"; setTextColor(0xFFB9B0FF.toInt()); textSize = 13f
+            setTypeface(typeface, Typeface.BOLD)
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        header.addView(TextView(this).apply {
+            text = "✕"; setTextColor(Color.WHITE); textSize = 18f; setPadding(dp(12), 0, 0, 0)
+            setOnClickListener { panel.visibility = View.GONE }
+        })
+        panel.addView(header)
+        body = TextView(this).apply {
+            setTextColor(Color.WHITE)
+            textSize = prefs.getInt("tsize", 15).toFloat()
+            setPadding(0, dp(6), 0, 0)
+        }
+        panel.addView(MaxHeightScroll(this, (sh * 0.4).toInt()).apply { addView(body) })
 
+        val atBottom = prefs.getInt("pos", 0) == 1
+        wm.addView(panel, lp((sw * 0.92).toInt(), WindowManager.LayoutParams.WRAP_CONTENT,
+            (if (atBottom) Gravity.BOTTOM else Gravity.TOP) or Gravity.CENTER_HORIZONTAL,
+            if (atBottom) dp(80) else dp(48)))
+
+        val size = dp(prefs.getInt("btnsize", 56))
         btn = TextView(this).apply {
-            text = "🤖"; textSize = 26f; gravity = Gravity.CENTER; setPadding(28, 20, 28, 20)
-            background = GradientDrawable().apply { setColor(0xCC202020.toInt()); shape = GradientDrawable.OVAL }
+            text = "🤖"; gravity = Gravity.CENTER
+            setTextSize(TypedValue.COMPLEX_UNIT_PX, size * 0.5f)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL; setColor(0xE66C5CE7.toInt()); setStroke(dp(2), 0x88FFFFFF.toInt())
+            }
         }
-        val bp = lp(WindowManager.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START, 400)
+        val bp = lp(size, size, Gravity.TOP or Gravity.START, dp(160))
         var sx = 0f; var sy = 0f; var ox = 0; var oy = 0; var moved = false; var t0 = 0L
         btn.setOnTouchListener { _, e ->
             when (e.action) {
@@ -114,7 +153,12 @@ class HudService : Service() {
         wm.addView(btn, bp)
     }
 
-    private fun show(t: String) { panel.text = t; panel.visibility = View.VISIBLE }
+    private fun show(t: String, autoHide: Boolean = true) {
+        body.text = t
+        panel.visibility = View.VISIBLE
+        ui.removeCallbacks(hideTask)
+        if (autoHide && prefs.getBoolean("auto", true)) ui.postDelayed(hideTask, 15000)
+    }
 
     private fun grab(): Bitmap? = synchronized(lock) {
         val img = held ?: return null
@@ -126,17 +170,35 @@ class HudService : Service() {
     }
 
     private fun ask() {
+        if (busy) return
         val bmp = grab() ?: return show("Ainda sem imagem. Mexa a tela e tente de novo.")
-        show("Analisando...")
+        busy = true
+        btn.text = "⏳"
+        show("Analisando a tela...", false)
         Thread {
-            val out = try { callGemini(bmp) } catch (e: Exception) { "Erro: ${e.message}" }
-            ui.post { show(out) }
+            val out = try { callGemini(bmp) } catch (e: Exception) { "Não consegui conectar: ${e.message}" }
+            ui.post { busy = false; btn.text = "🤖"; show(out) }
         }.start()
     }
 
+    private fun buildPrompt(): String {
+        val mode = prefs.getInt("mode", 0).coerceIn(0, Cfg.MODE_PROMPTS.size - 1)
+        val len = when (prefs.getInt("len", 0)) {
+            0 -> "Responda em no máximo 2 frases."
+            1 -> "Responda em no máximo 4 frases."
+            else -> "Pode detalhar, em até 8 frases."
+        }
+        val extra = prefs.getString("extra", "") ?: ""
+        return Cfg.MODE_PROMPTS[mode] + " " + len +
+            (if (extra.isNotEmpty()) " Instrução do jogador: $extra." else "") +
+            " Responda em português, em texto simples, sem markdown. Ignore o botão e o painel de overlay do assistente."
+    }
+
     private fun callGemini(bmp: Bitmap): String {
-        val key = getSharedPreferences("cfg", 0).getString("key", "") ?: ""
-        if (key.isEmpty()) return "Configure a chave da API no app."
+        val key = prefs.getString("key", "") ?: ""
+        if (key.isEmpty()) return "Cole sua chave da API nas configurações do app."
+        val model = (prefs.getString("model", Cfg.DEFAULT_MODEL) ?: Cfg.DEFAULT_MODEL).ifEmpty { Cfg.DEFAULT_MODEL }
+
         val s = 1024f / maxOf(bmp.width, bmp.height)
         val small = Bitmap.createScaledBitmap(bmp, (bmp.width * s).toInt(), (bmp.height * s).toInt(), true)
         val bos = ByteArrayOutputStream()
@@ -144,23 +206,31 @@ class HudService : Service() {
         val b64 = Base64.encodeToString(bos.toByteArray(), Base64.NO_WRAP)
 
         val body = JSONObject().put("contents", JSONArray().put(JSONObject().put("parts", JSONArray()
-            .put(JSONObject().put("text", PROMPT))
+            .put(JSONObject().put("text", buildPrompt()))
             .put(JSONObject().put("inline_data", JSONObject().put("mime_type", "image/jpeg").put("data", b64))))))
 
-        val c = URL("https://generativelanguage.googleapis.com/v1beta/models/$MODEL:generateContent")
+        val c = URL("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent")
             .openConnection() as HttpURLConnection
         c.requestMethod = "POST"; c.doOutput = true; c.connectTimeout = 15000; c.readTimeout = 60000
         c.setRequestProperty("Content-Type", "application/json")
         c.setRequestProperty("x-goog-api-key", key)
         c.outputStream.use { it.write(body.toString().toByteArray()) }
-        val stream = if (c.responseCode < 400) c.inputStream else c.errorStream
-        val txt = stream.bufferedReader().readText()
-        if (c.responseCode >= 400) return "Erro ${c.responseCode}: ${txt.take(200)}"
-        return JSONObject(txt).getJSONArray("candidates").getJSONObject(0)
+
+        val code = c.responseCode
+        val txt = (if (code < 400) c.inputStream else c.errorStream).bufferedReader().readText()
+        if (code >= 400) return when (code) {
+            404 -> "Esse modelo não está disponível. Abra o app e troque o nome do modelo nas configurações."
+            429 -> "Limite grátis atingido. Aguarde um minuto e tente de novo."
+            400, 403 -> "Chave inválida ou requisição recusada. Confira a chave no app."
+            else -> "Erro $code"
+        }
+        val out = JSONObject(txt).getJSONArray("candidates").getJSONObject(0)
             .getJSONObject("content").getJSONArray("parts").getJSONObject(0).getString("text")
+        return out.replace("**", "").replace("* ", "• ").trim()
     }
 
     override fun onDestroy() {
+        ui.removeCallbacks(hideTask)
         runCatching { wm.removeView(btn); wm.removeView(panel) }
         synchronized(lock) { held?.close(); held = null }
         display?.release(); reader?.close(); projection?.stop()
